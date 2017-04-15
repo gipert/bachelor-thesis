@@ -1,6 +1,6 @@
 #!/bin/make
 #
-# Makefile for the thesis project
+# (very brute) Makefile for the thesis project
 #
 
 TEX = pdflatex -interaction=nonstopmode -output-directory=log
