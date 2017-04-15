@@ -1,0 +1,77 @@
+\definecolor{dkgreen}{rgb}{0,0.6,0}
+\definecolor{gray}{rgb}{0.5,0.5,0.5}
+\definecolor{mauve}{rgb}{0.58,0,0.82}
+
+\lstset{%frame=tb,
+  language=c++,
+  aboveskip=3mm,
+  belowskip=3mm,
+  showstringspaces=false,
+  columns=flexible,
+  basicstyle={\small\ttfamily},
+  numbers=none,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{dkgreen},
+  stringstyle=\color{mauve},
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=3
+}
+
+\section[Appendix]{Appendix: Fitting with the \texttt{TMinuit} class}
+	When performing a fit not only minimising the standard $\chi^2$
+	\[
+		\chi^2_\textup{std}=\sum_i \left(\frac{N_i-N_i^*}{\sqrt{N_i^*}}\right)^2
+	\]
+	but a more general function (referred to as $\chi^2$ for the remainder of this section), the build-in ROOT method \texttt{TF1::Fit} is no longer exploitable. Given data and a \texttt{TF1} object, this method uses the \texttt{TMinuit} libraries in order to minimise $\chi^2_\textup{std}$ and efficiently provide results. Is therefore necessary to explicitly write the chosen $\chi^2$ function and directly use \texttt{TMinuit} to minimise it.
+	
+	Let's first consider the infinite resolution case of the spectrum (\ref{eq:spectrum}), when its expression it's explicit. After declaring the \texttt{TMinuit} object that performs the minimisation (\texttt{gMinuit}), the function that needs minimising (\texttt{myFCN}), that is to say the $\chi^2$ function, must be set with the command
+	\begin{lstlisting}
+	gMinuit->SetFCN(myFCN);
+	\end{lstlisting}
+	The implementation of \texttt{myFCN} must be standard \cite{root}:
+	\begin{lstlisting}
+	void myFCN( int &npar, double* gin, double &f, double* par, int flag) {
+		f = ... ;	// implement the function
+	}
+	\end{lstlisting}
+	where \texttt{f} is the value of the $\chi^2$ function, \texttt{par} is the pointer to the array of function parameters and \texttt{npar} its dimension; \texttt{TMinuit} will vary the values it points in the minimisation procedure. The other arguments will not be considered for the purpose of this section. In the specific case we are examining, we can calculate the value of the $\chi^2_\textup{std}$ using a \texttt{for} loop:
+	\begin{lstlisting}
+	double chi2 = 0;
+	double* xi = new double[1];
+	for ( int i = 1 ; i <= dataset->GetSize()-2 ; ++i ) {
+	
+		xi[0] = Emin + (Emax-Emin)/(2*N_div) + (i-1)*(Emax-Emin)/N_div;	
+			// bin's mid point
+		chi2 += pow( (spectrum->EvalPar( xi , par ) - dataset->GetBinContent(i)) / datasetNH->GetBinError(i) ,2);
+	}
+	f = chi2;
+	\end{lstlisting}
+	where \texttt{spectrum} is a \texttt{TF1} object corresponding to our theoretical distribution with its parameters and \texttt{dataset} is a \texttt{TH1F} object with \texttt{N\_div} number of bins between the range $[\texttt{Emin},\texttt{Emax}]$ containing the data to fit. Is important to note that \texttt{spectrum} is evaluated in each bin's mid point and in the parameter values pointed toby \texttt{par}, the latter being passed from the \texttt{TMinuit} object to \texttt{myFCN} to test the $\chi^2$ value during the minimisation procedure. This implementation allows the user to change the $\chi^2_\textup{std}$ expression or add other terms. 
+	
+	Now that the function to minimise is set we can initialise the parameters and add their limits with the \texttt{mnparm} function, then launch the minimisation procedure with the \texttt{mnexcm} function. There are three algorithms in \texttt{TMinuit}: \texttt{SEEK} consists in a preliminary Monte Carlo search of the minimum, \texttt{SIMPLEX} quickly finds its rough value and \texttt{MIGRAD} improves the estimation. \texttt{SEEK} it's often used to find the absolute minimum before improving it, as a matter of fact it can happen that \texttt{SIMPLEX} or \texttt{MIGRAD} converges to a minimum which is only local.
+	
+	Applying this procedure to the finite resolution case calls for further code enhancement to bypass the absence of an explicit form of the spectrum as above, therefore using a \texttt{TF1} object to represent it is now obviously impossible. The sleight of hand required to overcome this obstacle is writing the integrand of (\ref{eq:spectrum}) 
+	\begin{equation*}
+		f(E,\hat{E})=\frac{N_pT}{4\pi L^2}\frac{dN}{dE}(E)\:P_{ee}(E)\:\sigma_\textup{IBD}(E)\:G(E-0.78-\hat{E},\delta \hat{E})
+	\end{equation*}
+	as a \texttt{TF1} with $E$ as the main variable $x$ and $\hat{E}$ as a parameter, then when calculating $\chi^2$ integrating in $dE$ for every point using $\hat{E}$ as the main variable. The code is presented below:
+	\begin{lstlisting}
+	for ( int i = 1 ; i <= dataset->GetSize()-2 ; ++i ) {
+	
+		par[7] = Emin + (Emax-Emin)/(2*N_div_R) + (i-1)*(Emax-Emin)/N_div_R;
+		chi2 += pow( ( integrand->Integral( Ethr , Max , par , 1E-13) - dataset->GetBinContent(i)) / dataset->GetBinError(i) ,2);
+   	}
+	\end{lstlisting}
+	The parameter \texttt{par[7]} represents $\hat{E}$, \texttt{Ethr} it's the energy threshold, \texttt{Max} a sufficient high energy value where the antineutrino distribution is practically zero, and the fourth argument of \texttt{TF1::Integral} is the tolerance set in the ROOT's integration algorithm. The parameters value must also be called back from the \texttt{TMinuit} object before every calculation of $\chi^2$ inserting
+	\begin{lstlisting}
+	for ( int i = 0 ; i < npar ; ++i ) {
+		gMinuit->GetParameter( i , par[i] , parErr[i] );
+		}	
+	\end{lstlisting}
+	inside the \texttt{myFCN} declaration before the \texttt{for} loop.
+	
+	Unlike the first version, which requires negligible computational time in this kind of analysis, this code it's definitely time-consuming: a complete minimisation takes several minutes. This is due to the calculation of the integral, which is not trivial even with numerical methods; decreasing the tolerance value obviously creates additional processing time.
+	
+	The limits given by the complex kind of integration also influence the range of resolution values we want to test. For $a<2\%$ the integration algorithm with a tolerance of $10^{-13}$ hardly converges all over the points, and the value of $\chi^2$ is then distorted. A smaller tolerance value would clearly prevents this issue, but the amount of required time for each iteration becomes unacceptable when the need to iterate it in a program that acts in a large number of situations arises.	
